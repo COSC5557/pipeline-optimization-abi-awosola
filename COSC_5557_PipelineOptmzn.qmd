@@ -1,0 +1,1305 @@
+---
+title: "COCS 5557: Practical Machine Learning"
+subtitle: "Pipeline Optimization"
+format:
+  pdf:
+    include-in-header: 
+      text: |
+        \usepackage{lscape}
+        \newcommand{\blandscape}{\begin{landscape}}
+        \newcommand{\elandscape}{\end{landscape}}
+jupyter: python3
+
+geometry: "left=15mm"
+
+---
+
+**Introduction:**
+
+The objective of this study is to optimize the entire machine learning pipeline, including preprocessing steps and algorithm selection, through *hyperparameter optimization*. We aim to explore the efficiency of various components within the pipeline and their interactions. By employing hyperparameter optimization techniques, we seek to identify the most effective combination of preprocessing steps, algorithms, and hyperparameters for each dataset.
+
+
+
+
+**Key Concepts Deployed:**
+
+- **Optuna**: Optuna is a Python library for hyperparameter optimization. It suggests hyperparameters based on the distributions specified in the objective function and uses these results to suggest better hyperparameters in the next trials.
+
+- **Objective Function**: This function guides the optimization process. It takes a trial object from Optuna, which it uses to suggest hyperparameters. It then trains and evaluates a model with these hyperparameters, and returns the model's accuracy.
+
+- **Study**: The study is the main optimization process. It runs the objective function for a specified number of trials, each time with different hyperparameters suggested by Optuna. The study keeps track of the best trial - the one where the objective function returned the highest accuracy.
+
+- **Plots**: The plots provide a visual representation of the optimization process.
+
+Thus, the following lines of code use `Optuna` to perform `hyperparameter` optimization on a machine learning pipeline that includes `scaling, feature selection,` and select ML models. 
+
+To reiterate, the goal is to find the `hyperparameters` that `maximize` the models' accuracy on the test data. The results of the optimization are then visualized in a plot. The code is well-structured and follows the typical steps of a machine learning project: *data loading and preprocessing, model training and evaluation, hyperparameter optimization, and results visualizatio*n. The use of a pipeline and an objective function makes the code modular and easy to modify or extend. For example, one could easily add more preprocessing steps, change the classifier/regressor, or modify the `hyperparameter` distributions. The use of Optuna makes the hyperparameter optimization process efficient and easy to manage. The plot provides a clear visualization of the results and helps to understand the effects of the `hyperparameters` on the models' performance.
+
+
+
+\underline{The following outline the steps are specific to this exercise on the pipeline optimization}
+
+1. **Data Loading and Preprocessing**: All needed libraries and the dataset from a CSV file were loaded. The dataset is then split into features (`X`) and the target variable (`y`). For the classification part, the target variable is encoded into unique integers using `LabelEncoder`. The feature and target datasets were individually split into training and testing sets using `train_test_split` from `sklearn`.
+
+2. **Objective Function**: The objective function uses a trial object from `Optuna` to suggest `hyperparameters` for the model being considered. The function suggests a `scaler (StandardScaler, MinMaxScaler, or MaxAbsScaler)`, a `threshold` for the `VarianceThreshold` selector, and the `number of neighbors` for the `KNeighborsClassifier`, for instance. A pipeline is then created with the chosen `scaler, selector`, and `classifier`. *The pipeline is fit on the* `training` `data` *and evaluated on the* `test data`. The accuracy of the model on the `test data` is returned as *the objective to be maximized*.
+
+3. **Optimization**: Following the immediate step, an `Optuna` `study` is created to `maximize` the `objective function`. The `study` runs the `objective function` for 700 and 100 trials for the classification and regression parts respectively. Each time, the `study` runs with different `hyperparameters` suggested by `Optuna`. The study keeps track of the performance of each trial. The best `trial` and its `accuracy` and `hyperparameters` are then returned.
+
+4. **Results Conversion and Plotting**: `study.trials_dataframe` function is then used to convert the results of the `study` into a data frame for easy manipulation and plotting. The data frame is sorted, for instance, by the number of neighbors, and a line plot is created to visualize the accuracy against the `number of neighbors` for the `KNN classifier`. different lines represent different `scalers`.
+
+
+
+**Classification Part**
+
+
+
+
+**KNN classifier**
+
+
+```{python}
+#| echo: false  
+
+
+import pandas as pd
+from pandas import read_csv  # For dataframes
+from numpy import ravel  # For matrices
+from sklearn.model_selection import train_test_split  # For train/test splits
+from sklearn.neighbors import KNeighborsClassifier  # The KNN classifier
+from sklearn.feature_selection import VarianceThreshold  # Feature selector
+from sklearn.pipeline import Pipeline  # For setting up pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+import matplotlib.pyplot as plt  # For plotting data
+import seaborn as sns  # For plotting data
+import optuna
+
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Documents\Practical ML\primary+tumor\Encoded_Primary_Tum.csv', sep=r',')
+
+
+# Split the data into features and target
+X = data.drop(columns=['age'])
+y = data['age']
+
+# Encode the labels into unique integers
+encoder = LabelEncoder()
+y = encoder.fit_transform(ravel(y))
+
+# Split the data into test and train
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42)
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(),
+                  'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    n_neighbors = trial.suggest_int('classifier__n_neighbors', 1, 30)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', KNeighborsClassifier(n_neighbors=n_neighbors))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=700)
+
+
+
+model_KNN = KNeighborsClassifier()
+
+model_KNN.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_KNN.score(X_test,y_test))
+
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Print the column names to verify
+print(trial_df.columns)
+
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Sort the DataFrame by 'params_classifier__n_neighbors'
+trial_df.sort_values(by='params_classifier__n_neighbors', inplace=True)
+
+# Line plot for n_neighbors vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__n_neighbors',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Number of Neighbors (n_neighbors)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Number of Neighbors for KNN Classifier')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_neighbors_line.png')
+
+# Display plot
+plt.show()
+
+
+```
+
+
+
+
+**Decision tree classifier**
+
+
+```{python}
+#| echo: false
+
+import pandas as pd
+from pandas import read_csv  # For dataframes
+from numpy import ravel  # For matrices
+from sklearn.model_selection import train_test_split  # For train/test splits
+from sklearn.tree import DecisionTreeClassifier  # The decision tree classifier
+from sklearn.feature_selection import VarianceThreshold  # Feature selector
+from sklearn.pipeline import Pipeline  # For setting up pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+import matplotlib.pyplot as plt  # For plotting data
+import seaborn as sns  # For plotting data
+import optuna
+
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+#print(X_train.shape)
+#print(X_test.shape)
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(),
+                  'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    max_depth = trial.suggest_int('classifier__max_depth', 1, 30)
+    min_samples_split = trial.suggest_int('classifier__min_samples_split', 2, 20)
+    min_samples_leaf = trial.suggest_int('classifier__min_samples_leaf', 1, 20)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', DecisionTreeClassifier(max_depth=max_depth,
+                                               min_samples_split=min_samples_split,
+                                               min_samples_leaf=min_samples_leaf))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=700)
+
+
+
+model_DTC = DecisionTreeClassifier()
+
+model_DTC.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_DTC.score(X_test,y_test))
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Print the column names to verify
+print(trial_df.columns)
+
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Plot for max_depth
+sns.lineplot(data=trial_df,
+             x='params_classifier__max_depth',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Plot for min_samples_leaf
+sns.lineplot(data=trial_df,
+             x='params_classifier__min_samples_leaf',
+             y='value',
+             hue='params_scaler',
+             marker='s')
+
+# Set labels and title
+plt.xlabel('Hyperparameter Value')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Hyperparameters for Decision Tree Classifier')
+
+# Add legend manually
+plt.legend(title='Hyperparameter')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_hyperparameters.png')
+
+# Display plot
+plt.show()
+
+
+```
+
+
+**Logistic regression**
+
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from pandas import read_csv  # For dataframes
+from numpy import ravel  # For matrices
+from sklearn.model_selection import train_test_split  # For train/test splits
+from sklearn.linear_model import LogisticRegression  # The logistic regression classifier
+from sklearn.feature_selection import VarianceThreshold  # Feature selector
+from sklearn.pipeline import Pipeline  # For setting up pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+import matplotlib.pyplot as plt  # For plotting data
+import seaborn as sns  # For plotting data
+import optuna
+
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(),
+                  'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    C = trial.suggest_float('classifier__C', 0.01, 100, log=True)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', LogisticRegression(C=C, penalty='l2', solver='lbfgs', max_iter=1000))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=700)
+
+
+
+model_LOGi = LogisticRegression(max_iter=1000)
+
+model_LOGi.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_LOGi.score(X_test,y_test))
+
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Print the column names to verify
+print(trial_df.columns)
+
+
+# Plotting results
+plt.figure(figsize=(10, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Sort the DataFrame by 'params_classifier__C'
+trial_df.sort_values(by='params_classifier__C', inplace=True)
+
+# Line plot for C vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__C',
+             y='value',
+             hue='params_scaler',
+             marker='o',
+             palette='Set1')
+
+# Set labels and title
+plt.xscale('log')
+plt.xlabel('C (Regularization strength)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Regularization Strength for Logistic Regression Classifier')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_regularization_line.png')
+
+# Display plot
+plt.show()
+
+
+
+
+```
+
+
+
+
+**Random Forest classifier**
+
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from pandas import read_csv  # For dataframes
+from numpy import ravel  # For matrices
+from sklearn.model_selection import train_test_split  # For train/test splits
+from sklearn.ensemble import RandomForestClassifier  # The Random Forest classifier
+from sklearn.feature_selection import VarianceThreshold  # Feature selector
+from sklearn.pipeline import Pipeline  # For setting up pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+import matplotlib.pyplot as plt  # For plotting data
+import seaborn as sns  # For plotting data
+import optuna
+
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(),
+                  'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    n_estimators = trial.suggest_int('classifier__n_estimators', 10, 100, step=10)
+    max_depth = trial.suggest_int('classifier__max_depth', 2, 30)
+    min_samples_split = trial.suggest_int('classifier__min_samples_split', 2, 20)
+    min_samples_leaf = trial.suggest_int('classifier__min_samples_leaf', 1, 20)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', RandomForestClassifier(n_estimators=n_estimators,
+                                               max_depth=max_depth,
+                                               min_samples_split=min_samples_split,
+                                               min_samples_leaf=min_samples_leaf))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=700)
+
+
+model_RFC = RandomForestClassifier()
+
+model_RFC.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_RFC.score(X_test,y_test))
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Print the column names to verify
+print(trial_df.columns)
+
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Line plot for n_estimators vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__n_estimators',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Line plot for max_depth vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__max_depth',
+             y='value',
+             hue='params_scaler',
+             marker='s')
+
+# Line plot for min_samples_split vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__min_samples_split',
+             y='value',
+             hue='params_scaler',
+             marker='d')
+
+# Line plot for min_samples_leaf vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__min_samples_leaf',
+             y='value',
+             hue='params_scaler',
+             marker='^')
+
+# Set labels and title
+plt.xlabel('Hyperparameter Value')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Hyperparameters for Random Forest Classifier')
+
+# Add legend manually
+plt.legend(title='Hyperparameter')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_hyperparameters_random_forest.png')
+
+# Display plot
+plt.show()
+
+```
+
+
+
+
+**Bagging classifier**
+
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from pandas import read_csv  # For dataframes
+from numpy import ravel  # For matrices
+from sklearn.model_selection import train_test_split  # For train/test splits
+from sklearn.ensemble import BaggingClassifier  # The Bagging classifier
+from sklearn.feature_selection import VarianceThreshold  # Feature selector
+from sklearn.pipeline import Pipeline  # For setting up pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+import matplotlib.pyplot as plt  # For plotting data
+import seaborn as sns  # For plotting data
+import optuna
+
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(),
+                  'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    n_estimators = trial.suggest_int('classifier__n_estimators', 10, 100, step=10)
+    max_samples = trial.suggest_float('classifier__max_samples', 0.1, 1.0)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', BaggingClassifier(n_estimators=n_estimators,
+                                         max_samples=max_samples,
+                                         random_state=0))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=700)
+
+
+model_BC = BaggingClassifier()
+
+model_BC.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_BC.score(X_test,y_test))
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Print the column names to verify
+print(trial_df.columns)
+
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Line plot for n_estimators vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__n_estimators',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Line plot for max_samples vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__max_samples',
+             y='value',
+             hue='params_scaler',
+             marker='s')
+
+# Set labels and title
+plt.xlabel('Hyperparameter Value')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Hyperparameters for Bagging Classifier')
+
+# Add legend manually
+plt.legend(title='Hyperparameter')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_hyperparameters_bagging.png')
+
+# Display plot
+plt.show()
+
+```
+
+
+
+
+**Regression Part:**
+
+**Ridge Algorithm**
+
+```{python}
+#| echo: false
+
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+from sklearn.feature_selection import VarianceThreshold
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Desktop\winequality-white.csv', sep=r';')
+
+# Split the data into features and target
+X = data.drop(columns=['alcohol'])
+y = data['alcohol']
+
+# Encode the labels into unique integers
+#encoder = LabelEncoder()
+#y = encoder.fit_transform(ravel(y))
+
+# Split the data into test and train
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42)
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(), 'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    alpha = trial.suggest_float('classifier__alpha', 0.01, 100, log=True)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', Ridge(alpha=alpha))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+
+
+model_RDG = Ridge()
+
+model_RDG.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_RDG.score(X_test,y_test))
+
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(10, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Line plot for alpha vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__alpha',
+             y='value',
+             hue='params_scaler',
+             marker='o',
+             palette='Set1')
+
+# Set labels and title
+plt.xscale('log')
+plt.xlabel('Alpha (Regularization strength)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Regularization Strength for Ridge Regression')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_regularization_ridge.png')
+
+# Display plot
+plt.show()
+
+
+```
+
+
+**Linear Regression**
+
+```{python}
+#| echo: false  
+
+
+import pandas as pd
+from pandas import read_csv  # For dataframes
+from numpy import ravel  # For matrices
+from sklearn.model_selection import train_test_split  # For train/test splits
+from sklearn.linear_model import LinearRegression  # The Linear Regression model
+from sklearn.feature_selection import VarianceThreshold  # Feature selector
+from sklearn.pipeline import Pipeline  # For setting up pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+import matplotlib.pyplot as plt  # For plotting data
+import seaborn as sns  # For plotting data
+import optuna
+
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(),
+                  'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('regressor', LinearRegression())
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+
+model_LR = LinearRegression()
+
+model_LR.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_LR.score(X_test,y_test))
+
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Print the column names to verify
+#print(trial_df.columns)
+
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Line plot for hyperparameter vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_selector__threshold',  # Adjust this based on your specific hyperparameters
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Hyperparameter Value')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Hyperparameters for Linear Regression')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_hyperparameters_linear_regression.png')
+
+# Display plot
+plt.show()
+
+```
+
+**Lasso Model**
+
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import Lasso
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+from sklearn.feature_selection import VarianceThreshold
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(), 'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    alpha = trial.suggest_float('regressor__alpha', 0.01, 100, log=True)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('regressor', Lasso(alpha=alpha))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+
+model_Lasso = Lasso()
+
+model_Lasso.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_Lasso.score(X_test,y_test))
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(10, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Scatter plot for alpha vs. accuracy
+sns.scatterplot(data=trial_df,
+                x='params_regressor__alpha',
+                y='value',
+                hue='params_scaler',
+                marker='o',
+                palette='Set1')
+
+# Line plot for alpha vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_regressor__alpha',
+             y='value',
+             hue='params_scaler',
+             palette='Set1',
+             legend=False)
+
+# Set labels and title
+plt.xscale('log')
+plt.xlabel('Alpha (Regularization strength)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Regularization Strength for Lasso Regression')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_regularization_lasso.png')
+
+# Display plot
+plt.show()
+
+```
+
+
+**Decision Tree Regressor**
+
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+from sklearn.feature_selection import VarianceThreshold
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(), 'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    max_depth = trial.suggest_int('regressor__max_depth', 2, 32, log=True)
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('regressor', DecisionTreeRegressor(max_depth=max_depth, random_state=0))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+
+model_DTR = DecisionTreeRegressor()
+
+model_DTR.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_DTR.score(X_test,y_test))
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(10, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Scatter plot for max_depth vs. accuracy
+sns.scatterplot(data=trial_df,
+                x='params_regressor__max_depth',
+                y='value',
+                hue='params_scaler',
+                marker='o',
+                palette='Set1')
+
+# Line plot for max_depth vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_regressor__max_depth',
+             y='value',
+             hue='params_scaler',
+             palette='Set1',
+             legend=False)
+
+# Set labels and title
+plt.xlabel('Max Depth')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Max Depth for Decision Tree Regression')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_max_depth_decision_tree_regression.png')
+
+# Display plot
+plt.show()
+
+```
+
+
+**Neural Network**
+
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+from sklearn.feature_selection import VarianceThreshold
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Suppresses intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    scaler_map = {'StandardScaler': StandardScaler(), 'MinMaxScaler': MinMaxScaler(), 'MaxAbsScaler': MaxAbsScaler()}
+    scaler_choice = scaler_map[scaler_name]
+
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0  # MaxAbsScaler does not require thresholding
+
+    hidden_layer_sizes = [trial.suggest_int(f'regressor__hidden_layer_sizes_{i}', 10, 100) for i in range(trial.suggest_int('regressor__n_layers', 1, 3))]
+
+    pipe = Pipeline([
+        ('scaler', scaler_choice),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('regressor', MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, max_iter=1000, random_state=0))
+    ])
+
+    pipe.fit(X_train, y_train)
+    return pipe.score(X_test, y_test)
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+
+model_NNR = MLPRegressor(max_iter=1000)
+
+model_NNR.fit(X_train,y_train)
+print("Accuracy w/o Pipeline Optimization:", model_NNR.score(X_test,y_test))
+
+import textwrap
+
+print('Best trial:')
+trial = study.best_trial
+
+# Wrap and print the accuracy
+accuracy_output = 'Accuracy: {}'.format(trial.value)
+print(textwrap.fill(accuracy_output, width=80))
+
+print("Best hyperparameters:")
+
+# Convert the hyperparameters to a string and wrap the text
+hyperparameters_output = "{}".format(trial.params)
+print(textwrap.fill(hyperparameters_output, width=80))
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(10, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Scatter plot for hidden_layer_sizes vs. accuracy
+sns.scatterplot(data=trial_df,
+                x='params_regressor__hidden_layer_sizes_0',
+                y='value',
+                hue='params_scaler',
+                marker='o',
+                palette='Set1')
+
+# Line plot for hidden_layer_sizes vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_regressor__hidden_layer_sizes_0',
+             y='value',
+             hue='params_scaler',
+             palette='Set1',
+             legend=False)
+
+# Set labels and title
+plt.xlabel('Hidden Layer Size')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Hidden Layer Size for Neural Network Regression')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_hidden_layer_size_neural_network_regression.png')
+
+# Display plot
+plt.show()
+
+```
+
+
+
