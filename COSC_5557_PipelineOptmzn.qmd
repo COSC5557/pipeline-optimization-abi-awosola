@@ -1,0 +1,1107 @@
+---
+title: "COCS 5557: Practical Machine Learning"
+subtitle: "Pipeline Optimization"
+format:
+  pdf:
+    include-in-header: 
+      text: |
+        \usepackage{lscape}
+        \newcommand{\blandscape}{\begin{landscape}}
+        \newcommand{\elandscape}{\end{landscape}}
+jupyter: python3
+
+geometry: "left=15mm"
+
+---
+
+**Introduction:**
+
+In this study, we focus on optimizing the pipeline for some selected classifiers (or regessors)  using Optuna, a hyperparameter optimization library. The objective is to enhance the classifier's (or regressor's) performance on the `Primary Tumor` (or the `White Wine Quality`) dataset through tuning of hyperparameters and feature scaling techniques. 
+
+
+---
+
+**Pipeline Optimization with Optuna**
+
+
+**Dataset Preparation:** The dataset, `Primary Tumor` (or the `White Wine Quality`), is loaded from a CSV file, where features and target- `age` (or `alcohol`) labels are extracted.
+
+**Initial Performance Evaluation:** Before pipeline optimization, the performance is assessed using 5-fold cross-validation.
+
+
+
+**Nested resampling:** Nested resampling within pipeline optimization uses a multi-layered process that is combines outer cross-validation for model evaluation and inner cross-validation for hyperparameter tuning.
+
+For this exercise,
+
+**1. Outer Cross-Validation (Model Evaluation):**
+
+- The outer loop was implemented with 5-fold cross-validation, which involves partitioning the dataset into 5 non-overlapping folds.\
+- During each iteration, one fold is designated as the test set, while the remaining folds form the training set.\
+- Within the outer loop, a pipeline with various preprocessing and modeling components is evaluated on the training folds and tested on the validation fold.\
+- Accuracy (or $R^2$) are computed for each iteration, providing an initial assessment of the pipeline's efficiency.
+
+**2. Inner Cross-Validation (Hyperparameter Tuning):**
+
+- Nested within the outer loop, the inner loop facilitates hyperparameter optimization by further partitioning the training folds into 3 non-overlapping folds.\
+- Each iteration of the inner loop involves training the pipeline with scaler, selector and classifier (or regressor) hyperparameter configurations on the training folds and evaluating performance on the validation fold.\
+- Optuna, an advanced optimization techniques is employed to optimize hyperparameters.\
+- The best hyperparameter configuration, determined based on accuracy (or $R^2$) from the inner cross-validation, is retained for subsequent evaluation.
+
+**3. Aggregation and Evaluation:**
+
+- Across all iterations of the outer loop, the hyperparameters that give the best performance on the inner validation sets are kept.\
+- The pipeline's performance is aggregated over all outer fold iterations, providing an unbiased estimate of its generalization performance.\
+- Finally, the pipeline configuration with the highest aggregated performance serves as the optimal choice for deployment.
+
+
+
+**Classification Part**
+
+For this part, the dataset set is the `Primary Tumor` data and, the target variable is the `age` variable. The remaining variables serve as the feature variables.
+
+
+```{python}
+#| echo: false
+import optuna
+# Suppress intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+```
+
+
+
+**SVM classifier**
+
+*Hyperparameter search space:*
+
+`C = trial.suggest_float('classifier__C', 0.1, 10, log=True)`
+`kernel = trial.suggest_categorical('classifier__kernel', ['linear', 'rbf', 'poly'])`
+`degree = trial.suggest_int('classifier__degree', 2, 5)`
+
+```{python}
+#| echo: false  
+
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split, KFold, cross_val_score
+from sklearn.svm import SVC
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler, LabelEncoder
+from sklearn.feature_selection import VarianceThreshold
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+import textwrap
+
+# Define your data
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Documents\Practical ML\primary+tumor\Encoded_Primary_Tum.csv', sep=',')
+
+# Split the data into features and target
+X = data.drop(columns=['age'])
+y = data['age']
+
+# Encode the labels into unique integers
+encoder = LabelEncoder()
+y = encoder.fit_transform(np.ravel(y))
+
+# Split the data into test and train
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42)
+
+# Performance before pipeline optimization
+model_svm = SVC(random_state=42)
+initial_cv_scores = cross_val_score(model_svm, X_train, y_train, cv=5)
+print("Accuracy before Pipeline Optimization:", textwrap.fill(str(initial_cv_scores.mean()), width=80))
+
+# Define scalers and hyperparameters to optimize
+scalers = {
+    'StandardScaler': StandardScaler,
+    'MinMaxScaler': MinMaxScaler,
+    'MaxAbsScaler': MaxAbsScaler
+}
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', list(scalers.keys()))
+    scaler = scalers[scaler_name]
+    
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0
+        
+    C = trial.suggest_float('classifier__C', 0.1, 10, log=True)
+    kernel = trial.suggest_categorical('classifier__kernel', ['linear', 'rbf', 'poly'])
+    degree = trial.suggest_int('classifier__degree', 2, 5) if kernel == 'poly' else 3  # Set default degree to 3
+    
+    pipe = Pipeline([
+        ('scaler', scaler()),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', SVC(C=C, kernel=kernel, degree=degree, random_state=42))
+    ])
+    
+    # Perform nested cross-validation
+    outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    nested_scores = []
+    for train_index, test_index in outer_cv.split(X_train):
+        X_train_fold, X_val_fold = X_train.iloc[train_index], X_train.iloc[test_index]
+        y_train_fold, y_val_fold = y_train[train_index], y_train[test_index]
+        
+        # Inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        hyperparam_scores = []
+        for train_idx, val_idx in inner_cv.split(X_train_fold):
+            X_train_inner, X_val_inner = X_train_fold.iloc[train_idx], X_train_fold.iloc[val_idx]
+            y_train_inner, y_val_inner = y_train_fold[train_idx], y_train_fold[val_idx]
+            
+            pipe.fit(X_train_inner, y_train_inner)
+            score = pipe.score(X_val_inner, y_val_inner)
+            hyperparam_scores.append(score)
+        
+        # Use mean score as hyperparameter optimization criterion
+        avg_score = sum(hyperparam_scores) / len(hyperparam_scores)
+        nested_scores.append(avg_score)
+        
+    return sum(nested_scores) / len(nested_scores)
+    
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+# Best trial
+best_trial = study.best_trial
+
+# Wrap and print the accuracy
+print('Best trial accuracy:', textwrap.fill(str(best_trial.value), width=80))
+
+# Print best hyperparameters
+print("Best hyperparameters:", textwrap.fill(str(best_trial.params), width=80))
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Sort the DataFrame by 'params_classifier__C'
+trial_df.sort_values(by='params_classifier__C', inplace=True)
+
+# Line plot for C vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__C',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Regularization Parameter (C)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Regularization Parameter for SVM Classifier')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_C_svm_line.png')
+
+# Display plot
+plt.show()
+
+
+
+```
+
+
+
+
+
+
+
+**Random Forest classifier**
+
+*Hyperparameter search space:*
+
+`n_estimators = trial.suggest_int('classifier__n_estimators', 100, 200)`
+
+`max_depth = trial.suggest_int('classifier__max_depth', 1, 32)`
+
+
+```{python}
+#| echo: false
+
+from sklearn.ensemble import RandomForestClassifier
+
+# Performance before pipeline optimization
+model_rf = RandomForestClassifier(random_state=42)
+initial_cv_scores = cross_val_score(model_rf, X_train, y_train, cv=5)
+print("Accuracy before Pipeline Optimization:", textwrap.fill(str(initial_cv_scores.mean()), width=80))
+
+# Define scalers and hyperparameters to optimize
+scalers = {
+    'StandardScaler': StandardScaler,
+    'MinMaxScaler': MinMaxScaler,
+    'MaxAbsScaler': MaxAbsScaler
+}
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', list(scalers.keys()))
+    scaler = scalers[scaler_name]
+    
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0
+        
+    n_estimators = trial.suggest_int('classifier__n_estimators', 10, 200)
+    max_depth = trial.suggest_int('classifier__max_depth', 1, 32)
+    
+    pipe = Pipeline([
+        ('scaler', scaler()),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42))
+    ])
+    
+    # Perform nested cross-validation
+    outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    nested_scores = []
+    for train_index, test_index in outer_cv.split(X_train):
+        X_train_fold, X_val_fold = X_train.iloc[train_index], X_train.iloc[test_index]
+        y_train_fold, y_val_fold = y_train[train_index], y_train[test_index]
+        
+        # Inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        hyperparam_scores = []
+        for train_idx, val_idx in inner_cv.split(X_train_fold):
+            X_train_inner, X_val_inner = X_train_fold.iloc[train_idx], X_train_fold.iloc[val_idx]
+            y_train_inner, y_val_inner = y_train_fold[train_idx], y_train_fold[val_idx]
+            
+            pipe.fit(X_train_inner, y_train_inner)
+            score = pipe.score(X_val_inner, y_val_inner)
+            hyperparam_scores.append(score)
+        
+        # Use mean score as hyperparameter optimization criterion
+        avg_score = sum(hyperparam_scores) / len(hyperparam_scores)
+        nested_scores.append(avg_score)
+        
+    return sum(nested_scores) / len(nested_scores)
+    
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+# Best trial
+best_trial = study.best_trial
+
+# Wrap and print the accuracy
+print('Best trial accuracy:', textwrap.fill(str(best_trial.value), width=80))
+
+# Print best hyperparameters
+print("Best hyperparameters:", textwrap.fill(str(best_trial.params), width=80))
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Sort the DataFrame by 'params_classifier__n_estimators'
+trial_df.sort_values(by='params_classifier__n_estimators', inplace=True)
+
+# Line plot for n_estimators vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__n_estimators',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Number of Estimators (n_estimators)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Number of Estimators for Random Forest Classifier')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_n_estimators_line.png')
+
+# Display plot
+plt.show()
+
+
+```
+
+
+
+
+**Gradient Boosting classifier**
+
+*Hyperparameter search space:*
+
+`n_estimators = trial.suggest_int('classifier__n_estimators', 50, 500, log=True)`
+
+`learning_rate = trial.suggest_float('classifier__learning_rate', 0.01, 0.5, log=True)`
+
+`max_depth = trial.suggest_int('classifier__max_depth', 3, 10)`
+
+
+```{python}
+#| echo: false
+
+
+from sklearn.ensemble import GradientBoostingClassifier
+
+# Performance before pipeline optimization
+model_gradient_boosting = GradientBoostingClassifier(random_state=42)
+initial_cv_scores = cross_val_score(model_gradient_boosting, X_train, y_train, cv=5)
+print("Accuracy before Pipeline Optimization:", textwrap.fill(str(initial_cv_scores.mean()), width=80))
+
+# Define scalers and hyperparameters to optimize
+scalers = {
+    'StandardScaler': StandardScaler,
+    'MinMaxScaler': MinMaxScaler,
+    'MaxAbsScaler': MaxAbsScaler
+}
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', list(scalers.keys()))
+    scaler = scalers[scaler_name]
+    
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0
+        
+    n_estimators = trial.suggest_int('classifier__n_estimators', 50, 500, log=True)
+    learning_rate = trial.suggest_float('classifier__learning_rate', 0.01, 0.5, log=True)
+    max_depth = trial.suggest_int('classifier__max_depth', 3, 10)
+    
+    pipe = Pipeline([
+        ('scaler', scaler()),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', GradientBoostingClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth, random_state=42))
+    ])
+    
+    # Perform nested cross-validation
+    outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    nested_scores = []
+    for train_index, test_index in outer_cv.split(X_train):
+        X_train_fold, X_val_fold = X_train.iloc[train_index], X_train.iloc[test_index]
+        y_train_fold, y_val_fold = y_train[train_index], y_train[test_index]
+        
+        # Inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        hyperparam_scores = []
+        for train_idx, val_idx in inner_cv.split(X_train_fold):
+            X_train_inner, X_val_inner = X_train_fold.iloc[train_idx], X_train_fold.iloc[val_idx]
+            y_train_inner, y_val_inner = y_train_fold[train_idx], y_train_fold[val_idx]
+            
+            pipe.fit(X_train_inner, y_train_inner)
+            score = pipe.score(X_val_inner, y_val_inner)
+            hyperparam_scores.append(score)
+        
+        # Use mean score as hyperparameter optimization criterion
+        avg_score = sum(hyperparam_scores) / len(hyperparam_scores)
+        nested_scores.append(avg_score)
+        
+    return sum(nested_scores) / len(nested_scores)
+    
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+# Best trial
+best_trial = study.best_trial
+
+# Wrap and print the accuracy
+print('Best trial accuracy:', textwrap.fill(str(best_trial.value), width=80))
+
+# Print best hyperparameters
+print("Best hyperparameters:", textwrap.fill(str(best_trial.params), width=80))
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Line plot for n_estimators vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__n_estimators',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Number of Estimators')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Number of Estimators for Gradient Boosting Classifier')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_n_estimators_gradient_boosting_line.png')
+
+# Display plot
+plt.show()
+
+
+```
+
+
+
+**Bagging classifier**
+
+*Hyperparameter search space:*
+
+`n_estimators = trial.suggest_int('classifier__n_estimators', 10, 100)`
+
+`max_samples = trial.suggest_float('classifier__max_samples', 0.1, 1.0`
+
+```{python}
+#| echo: false
+
+
+from sklearn.ensemble import BaggingClassifier
+
+
+# Performance before pipeline optimization
+model_bagging = BaggingClassifier(random_state=42)
+initial_cv_scores = cross_val_score(model_bagging, X_train, y_train, cv=5)
+print("Accuracy before Pipeline Optimization:", textwrap.fill(str(initial_cv_scores.mean()), width=80))
+
+# Define scalers and hyperparameters to optimize
+scalers = {
+    'StandardScaler': StandardScaler,
+    'MinMaxScaler': MinMaxScaler,
+    'MaxAbsScaler': MaxAbsScaler
+}
+
+def objective(trial):
+    scaler_name = trial.suggest_categorical('scaler', list(scalers.keys()))
+    scaler = scalers[scaler_name]
+    
+    if scaler_name != 'MaxAbsScaler':
+        selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    else:
+        selector_threshold = 0.0
+        
+    n_estimators = trial.suggest_int('classifier__n_estimators', 10, 200)
+    max_samples = trial.suggest_float('classifier__max_samples', 0.1, 1.0)
+    
+    pipe = Pipeline([
+        ('scaler', scaler()),
+        ('selector', VarianceThreshold(threshold=selector_threshold)),
+        ('classifier', BaggingClassifier(n_estimators=n_estimators, max_samples=max_samples, random_state=42))
+    ])
+    
+    # Perform nested cross-validation
+    outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    nested_scores = []
+    for train_index, test_index in outer_cv.split(X_train):
+        X_train_fold, X_val_fold = X_train.iloc[train_index], X_train.iloc[test_index]
+        y_train_fold, y_val_fold = y_train[train_index], y_train[test_index]
+        
+        # Inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        hyperparam_scores = []
+        for train_idx, val_idx in inner_cv.split(X_train_fold):
+            X_train_inner, X_val_inner = X_train_fold.iloc[train_idx], X_train_fold.iloc[val_idx]
+            y_train_inner, y_val_inner = y_train_fold[train_idx], y_train_fold[val_idx]
+            
+            pipe.fit(X_train_inner, y_train_inner)
+            score = pipe.score(X_val_inner, y_val_inner)
+            hyperparam_scores.append(score)
+        
+        # Use mean score as hyperparameter optimization criterion
+        avg_score = sum(hyperparam_scores) / len(hyperparam_scores)
+        nested_scores.append(avg_score)
+        
+    return sum(nested_scores) / len(nested_scores)
+    
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+
+# Best trial
+best_trial = study.best_trial
+
+# Wrap and print the accuracy
+print('Best trial accuracy:', textwrap.fill(str(best_trial.value), width=80))
+
+# Print best hyperparameters
+print("Best hyperparameters:", textwrap.fill(str(best_trial.params), width=80))
+
+# Convert Optuna study results to DataFrame
+trial_df = study.trials_dataframe()
+
+# Plotting results
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df['params_scaler'] = trial_df['params_scaler'].astype(str)
+
+# Sort the DataFrame by 'params_classifier__n_estimators'
+trial_df.sort_values(by='params_classifier__n_estimators', inplace=True)
+
+# Line plot for n_estimators vs. accuracy
+sns.lineplot(data=trial_df,
+             x='params_classifier__n_estimators',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Number of Estimators (n_estimators)')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs. Number of Estimators for Bagging Classifier')
+
+# Add legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('accuracy_vs_n_estimators_bagging_line.png')
+
+# Display plot
+plt.show()
+
+
+
+```
+
+
+
+
+
+**Regression Part:**
+
+For this part of the exercise, the White Wine Quality is the dataset and, `alcohol` is the target variable.
+
+
+**Ridge Algorithm**
+
+*Hyperparameter search space:*
+
+`alpha = trial.suggest_float('classifier__alpha', 0.1, 10, log=True)`
+
+`solver = trial.suggest_categorical('solver', ['auto', 'svd', 'cholesky', 'lsqr', 'sparse_cg', 'sag', 'saga'])`
+    
+```{python}
+#| echo: false
+
+
+import pandas as pd
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.linear_model import Ridge
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+import textwrap
+
+# Suppress intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+# Load the data
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Desktop\winequality-white.csv', sep=r';')
+
+# Split the data into features and target
+X = data.drop(columns=['alcohol'])
+y = data['alcohol']
+
+# Define the outer cross-validation
+outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Evaluate default model (before optimization) - Ridge
+default_scores_ridge = []
+for train_index, test_index in outer_cv.split(X):
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    
+    # Create and fit default Ridge
+    default_model_ridge = Ridge()
+    default_model_ridge.fit(X_train, y_train)
+    
+    # Evaluate R² score on test set
+    default_score_ridge = default_model_ridge.score(X_test, y_test)
+    default_scores_ridge.append(default_score_ridge)
+
+# Print average R² score before optimization for Ridge
+print("Average R² score before optimization (Ridge):", textwrap.fill(str(sum(default_scores_ridge) / len(default_scores_ridge)), width=80))
+
+# Define the objective function for optimization - Ridge
+def objective_ridge(trial):
+    # Define the hyperparameters to tune
+    scaler_choice = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    alpha = trial.suggest_float('alpha', 0.001, 10, log=True)
+    solver = trial.suggest_categorical('solver', ['auto', 'svd', 'cholesky', 'lsqr', 'sparse_cg', 'sag', 'saga'])
+    
+    # Perform nested cross-validation
+    nested_scores_ridge = []
+    for train_index, test_index in outer_cv.split(X):
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+        
+        # Define the pipeline
+        pipe = Pipeline([
+            ('scaler', eval(scaler_choice)()),  # Dynamically create scaler instance based on choice
+            ('selector', VarianceThreshold(threshold=selector_threshold)),
+            ('regressor', Ridge(alpha=alpha, solver=solver))
+        ])
+        
+        # Perform inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        inner_scores_ridge = cross_val_score(pipe, X_train, y_train, cv=inner_cv, scoring='r2')
+        nested_scores_ridge.append(inner_scores_ridge.mean())
+        
+    return sum(nested_scores_ridge) / len(nested_scores_ridge)
+    
+# Perform hyperparameter tuning with Optuna - Ridge
+study_ridge = optuna.create_study(direction='maximize')
+study_ridge.optimize(objective_ridge, n_trials=50)
+
+# Print the best R² score and hyperparameters - Ridge
+print("Best R² Score (Ridge):", textwrap.fill(str(study_ridge.best_value), width=80))
+print("Best Hyperparameters (Ridge):", 
+textwrap.fill(str(study_ridge.best_params), width=80))
+
+# Convert Optuna study results to DataFrame
+trial_df_ridge = study_ridge.trials_dataframe()
+
+# Plotting results - Ridge
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df_ridge['params_scaler'] = trial_df_ridge['params_scaler'].astype(str)
+
+# Line plot for alpha vs. R² score - Ridge
+sns.lineplot(data=trial_df_ridge,
+             x='params_alpha',
+             y='value',
+             hue='params_scaler',
+             style='params_solver',  # Use different line styles for different solvers
+             markers=True)
+
+# Set labels and title
+plt.xlabel('Alpha (Regularization strength)')
+plt.ylabel('R² Score')
+plt.title('R² Score vs. Alpha (Regularization strength) for Ridge Regressor')
+
+# Display legend
+plt.legend(title='Scaler & Solver')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('r2_score_vs_alpha_line_ridge.png')
+
+# Display plot
+plt.show()
+
+
+
+```
+
+
+**ElasticNet Regressor**
+
+*Hyperparameter search space:*
+
+`alpha = trial.suggest_float('alpha', 0.001, 10, log=True)`
+    
+`l1_ratio = trial.suggest_float('l1_ratio', 0, 1)`
+
+```{python}
+#| echo: false
+
+import pandas as pd
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.linear_model import ElasticNet
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+import textwrap
+
+# Suppress intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+# Load the data
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Desktop\winequality-white.csv', sep=r';')
+
+# Split the data into features and target
+X = data.drop(columns=['alcohol'])
+y = data['alcohol']
+
+# Define the outer cross-validation
+outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Evaluate default model (before optimization) - ElasticNet
+default_scores_elasticnet = []
+for train_index, test_index in outer_cv.split(X):
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    
+    # Create and fit default ElasticNet
+    default_model_elasticnet = ElasticNet()
+    default_model_elasticnet.fit(X_train, y_train)
+    
+    # Evaluate R² score on test set
+    default_score_elasticnet = default_model_elasticnet.score(X_test, y_test)
+    default_scores_elasticnet.append(default_score_elasticnet)
+
+# Print average R² score before optimization for ElasticNet
+print("Average R² score before optimization (ElasticNet):", textwrap.fill(str(sum(default_scores_elasticnet) / len(default_scores_elasticnet)), width=80))
+
+# Define the objective function for optimization - ElasticNet
+def objective_elasticnet(trial):
+    # Define the hyperparameters to tune
+    scaler_choice = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    alpha = trial.suggest_float('alpha', 0.001, 10, log=True)
+    l1_ratio = trial.suggest_float('l1_ratio', 0, 1)
+    
+    # Perform nested cross-validation
+    nested_scores_elasticnet = []
+    for train_index, test_index in outer_cv.split(X):
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+        
+        # Define the pipeline
+        pipe = Pipeline([
+            ('scaler', eval(scaler_choice)()),  # Dynamically create scaler instance based on choice
+            ('selector', VarianceThreshold(threshold=selector_threshold)),
+            ('regressor', ElasticNet(alpha=alpha, l1_ratio=l1_ratio))
+        ])
+        
+        # Perform inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        inner_scores_elasticnet = cross_val_score(pipe, X_train, y_train, cv=inner_cv, scoring='r2')
+        nested_scores_elasticnet.append(inner_scores_elasticnet.mean())
+        
+    return sum(nested_scores_elasticnet) / len(nested_scores_elasticnet)
+    
+# Perform hyperparameter tuning with Optuna - ElasticNet
+study_elasticnet = optuna.create_study(direction='maximize')
+study_elasticnet.optimize(objective_elasticnet, n_trials=100)
+
+# Print the best R² score and hyperparameters - ElasticNet
+print("Best R² Score (ElasticNet):", textwrap.fill(str(study_elasticnet.best_value), width=80))
+print("Best Hyperparameters (ElasticNet):", study_elasticnet.best_params)
+
+# Convert Optuna study results to DataFrame
+trial_df_elasticnet = study_elasticnet.trials_dataframe()
+
+# Plotting results - ElasticNet
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df_elasticnet['params_scaler'] = trial_df_elasticnet['params_scaler'].astype(str)
+
+# Line plot for alpha vs. R² score - ElasticNet
+sns.lineplot(data=trial_df_elasticnet,
+             x='params_alpha',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Alpha (Regularization strength)')
+plt.ylabel('R² Score')
+plt.title('R² Score vs. Alpha (Regularization strength) for ElasticNet Regressor')
+
+# Display legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('r2_score_vs_alpha_line_elasticnet.png')
+
+# Display plot
+plt.show()
+
+
+
+```
+
+
+
+
+**KNN Regressor**
+
+*Hyperparameter search space:*
+
+`n_neighbors = trial.suggest_int('classifier__n_neighbors', 1, 20)`
+
+`weights = trial.suggest_categorical('weights', ['uniform', 'distance'])`
+
+```{python}
+#| echo: false
+
+import pandas as pd
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+import textwrap
+
+# Suppress intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+# Load the data
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Desktop\winequality-white.csv', sep=r';')
+
+# Split the data into features and target
+X = data.drop(columns=['alcohol'])
+y = data['alcohol']
+
+# Define the outer cross-validation
+outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Evaluate default model (before optimization) - KNN
+default_scores_knn = []
+for train_index, test_index in outer_cv.split(X):
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    
+    # Create and fit default KNeighborsRegressor
+    default_model_knn = KNeighborsRegressor()
+    default_model_knn.fit(X_train, y_train)
+    
+    # Evaluate R² score on test set
+    default_score_knn = default_model_knn.score(X_test, y_test)
+    default_scores_knn.append(default_score_knn)
+
+# Print average R² score before optimization for KNN
+print("Average R² score before optimization (KNN):", textwrap.fill(str(sum(default_scores_knn) / len(default_scores_knn)), width=80))
+
+# Define the objective function for optimization - KNN
+def objective_knn(trial):
+    # Define the hyperparameters to tune
+    scaler_choice = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    n_neighbors = trial.suggest_int('n_neighbors', 1, 20)
+    weights = trial.suggest_categorical('weights', ['uniform', 'distance'])  # New hyperparameter
+    
+    # Perform nested cross-validation
+    nested_scores_knn = []
+    for train_index, test_index in outer_cv.split(X):
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+        
+        # Define the pipeline
+        pipe = Pipeline([
+            ('scaler', eval(scaler_choice)()),  # Dynamically create scaler instance based on choice
+            ('selector', VarianceThreshold(threshold=selector_threshold)),
+            ('regressor', KNeighborsRegressor(n_neighbors=n_neighbors, weights=weights))  # Include weights
+        ])
+        
+        # Perform inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        inner_scores_knn = cross_val_score(pipe, X_train, y_train, cv=inner_cv, scoring='r2')
+        nested_scores_knn.append(inner_scores_knn.mean())
+        
+    return sum(nested_scores_knn) / len(nested_scores_knn)
+    
+# Perform hyperparameter tuning with Optuna - KNN
+study_knn = optuna.create_study(direction='maximize')
+study_knn.optimize(objective_knn, n_trials=100)
+
+# Print the best R² score and hyperparameters - KNN
+print("Best R² Score (KNN):", textwrap.fill(str(study_knn.best_value), width=80))
+print("Best Hyperparameters (KNN):", study_knn.best_params)
+
+# Convert Optuna study results to DataFrame
+trial_df_knn = study_knn.trials_dataframe()
+
+# Plotting results - KNN
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df_knn['params_scaler'] = trial_df_knn['params_scaler'].astype(str)
+
+# Line plot for n_neighbors vs. R² score - KNN
+sns.lineplot(data=trial_df_knn,
+             x='params_n_neighbors',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('Number of Neighbors')
+plt.ylabel('R² Score')
+plt.title('R² Score vs. Number of Neighbors for K-Nearest Neighbors Regressor')
+
+# Display legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('r2_score_vs_n_neighbors_line_knn.png')
+
+# Display plot
+plt.show()
+
+
+```
+
+
+**Support Vector Regressor**
+
+*Hyperparameter search space:*
+
+`C = trial.suggest_float('C', 0.1, 100, log=True)`
+
+`epsilon = trial.suggest_float('epsilon', 0.001, 1, log=True)`
+    
+```{python}
+#| echo: false
+
+import pandas as pd
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.svm import SVR
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, MaxAbsScaler
+import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
+import textwrap
+
+# Suppress intermediate output
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+# Load the data
+data = pd.read_csv(r'C:\Users\Laptop\OneDrive\Desktop\winequality-white.csv', sep=r';')
+
+# Split the data into features and target
+X = data.drop(columns=['alcohol'])
+y = data['alcohol']
+
+# Define the outer cross-validation
+outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Evaluate default model (before optimization) - SVM
+default_scores_svm = []
+for train_index, test_index in outer_cv.split(X):
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+    
+    # Create and fit default SVR
+    default_model_svm = SVR()
+    default_model_svm.fit(X_train, y_train)
+    
+    # Evaluate R² score on test set
+    default_score_svm = default_model_svm.score(X_test, y_test)
+    default_scores_svm.append(default_score_svm)
+
+# Print average R² score before optimization for SVM
+print("Average R² score before optimization (SVM):", textwrap.fill(str(sum(default_scores_svm) / len(default_scores_svm)), width=80))
+
+# Define the objective function for optimization - SVM
+def objective_svm(trial):
+    # Define the hyperparameters to tune
+    scaler_choice = trial.suggest_categorical('scaler', ['StandardScaler', 'MinMaxScaler', 'MaxAbsScaler'])
+    selector_threshold = trial.suggest_float('selector__threshold', 0, 0.01)
+    C = trial.suggest_float('C', 0.1, 100, log=True)
+    epsilon = trial.suggest_float('epsilon', 0.001, 1, log=True)
+    
+    # Perform nested cross-validation
+    nested_scores_svm = []
+    for train_index, test_index in outer_cv.split(X):
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+        
+        # Define the pipeline
+        pipe = Pipeline([
+            ('scaler', eval(scaler_choice)()),  # Dynamically create scaler instance based on choice
+            ('selector', VarianceThreshold(threshold=selector_threshold)),
+            ('regressor', SVR(C=C, epsilon=epsilon))
+        ])
+        
+        # Perform inner cross-validation for hyperparameter tuning
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+        inner_scores_svm = cross_val_score(pipe, X_train, y_train, cv=inner_cv, scoring='r2')
+        nested_scores_svm.append(inner_scores_svm.mean())
+        
+    return sum(nested_scores_svm) / len(nested_scores_svm)
+    
+# Perform hyperparameter tuning with Optuna - SVM
+study_svm = optuna.create_study(direction='maximize')
+study_svm.optimize(objective_svm, n_trials=100)
+
+# Print the best R² score and hyperparameters - SVM
+print("Best R² Score (SVM):", textwrap.fill(str(study_svm.best_value), width=80))
+print("Best Hyperparameters (SVM):", study_svm.best_params)
+
+# Convert Optuna study results to DataFrame
+trial_df_svm = study_svm.trials_dataframe()
+
+# Plotting results - SVM
+plt.figure(figsize=(12, 6))
+
+# Remove duplicate values from the 'params_scaler' column
+trial_df_svm['params_scaler'] = trial_df_svm['params_scaler'].astype(str)
+
+# Line plot for C vs. R² score - SVM
+sns.lineplot(data=trial_df_svm,
+             x='params_C',
+             y='value',
+             hue='params_scaler',
+             marker='o')
+
+# Set labels and title
+plt.xlabel('C (Regularization parameter)')
+plt.ylabel('R² Score')
+plt.title('R² Score vs. C (Regularization parameter) for Support Vector Machine Regressor')
+
+# Display legend
+plt.legend(title='Scaler')
+
+plt.grid(True)
+plt.tight_layout()
+
+# Save plot to a file
+plt.savefig('r2_score_vs_C_line_svm.png')
+
+# Display plot
+plt.show()
+
+
+```
+
